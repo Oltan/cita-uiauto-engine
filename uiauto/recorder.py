@@ -93,13 +93,65 @@ MODIFIER_KEY_NAMES = frozenset([
 # Windows POINT structure for ElementFromPoint
 try:
     import ctypes
+    from ctypes import wintypes
+    
     class POINT(ctypes.Structure):
         """Windows POINT structure for screen coordinates."""
         _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    
+    # Windows API functions for hotkey registration and DPI awareness
+    try:
+        user32 = ctypes.windll.user32
+        
+        # RegisterHotKey/UnregisterHotKey for native stop hotkey
+        RegisterHotKey = user32.RegisterHotKey
+        RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+        RegisterHotKey.restype = wintypes.BOOL
+        
+        UnregisterHotKey = user32.UnregisterHotKey
+        UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+        UnregisterHotKey.restype = wintypes.BOOL
+        
+        GetMessage = user32.GetMessageW
+        GetMessage.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, ctypes.c_uint, ctypes.c_uint]
+        GetMessage.restype = wintypes.BOOL
+        
+        PostQuitMessage = user32.PostQuitMessage
+        PostQuitMessage.argtypes = [ctypes.c_int]
+        PostQuitMessage.restype = None
+        
+        # DPI awareness
+        SetProcessDPIAware = user32.SetProcessDPIAware
+        SetProcessDPIAware.argtypes = []
+        SetProcessDPIAware.restype = wintypes.BOOL
+        
+        WINDOWS_API_AVAILABLE = True
+    except (AttributeError, OSError):
+        WINDOWS_API_AVAILABLE = False
+        RegisterHotKey = None
+        UnregisterHotKey = None
+        GetMessage = None
+        PostQuitMessage = None
+        SetProcessDPIAware = None
+    
     POINT_AVAILABLE = True
 except ImportError:
     POINT = None
     POINT_AVAILABLE = False
+    WINDOWS_API_AVAILABLE = False
+    RegisterHotKey = None
+    UnregisterHotKey = None
+    GetMessage = None
+    PostQuitMessage = None
+    SetProcessDPIAware = None
+
+# Hotkey constants
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+WM_HOTKEY = 0x0312
+VK_F12 = 0x7B
 
 
 class Recorder:
@@ -161,9 +213,12 @@ class Recorder:
         
         # Control flags
         self._recording = False
+        self._stopping = False  # Flag to prevent recording during stop sequence
         self._stop_event = threading.Event()
         self._keyboard_listener: Optional[keyboard.Listener] = None
         self._mouse_listener: Optional[mouse.Listener] = None
+        self._hotkey_thread: Optional[threading.Thread] = None
+        self._hotkey_hwnd = None  # Window handle for hotkey messages
         
         # Modifier keys state
         self._ctrl_pressed = False
@@ -171,19 +226,36 @@ class Recorder:
         self._shift_pressed = False
         self._win_pressed = False
         
-        # Stop hotkey state (Ctrl+Shift+F12)
+        # Stop hotkey state
         self._stop_hotkey_pressed = False
+        self._stop_hotkey_id = 1  # ID for RegisterHotKey
         
         self._desktop = Desktop(backend=self.backend)
 
     def start(self) -> None:
         """Start recording user interactions."""
+        # Enable DPI awareness for accurate click coordinate mapping
+        if WINDOWS_API_AVAILABLE and SetProcessDPIAware:
+            try:
+                SetProcessDPIAware()
+                if self.debug_json_out:
+                    print("  Debug: DPI awareness enabled")
+            except Exception as e:
+                if self.debug_json_out:
+                    print(f"  Debug: Failed to enable DPI awareness: {e}")
+        
         print("🎬 Recording started. Interact with the application.")
         print("   Press Ctrl+Shift+F12 to stop recording (or Ctrl+C in console).")
         self._recording = True
+        self._stopping = False
         self._stop_event.clear()
         
-        # Start input listeners
+        # Register native Windows hotkey (Ctrl+Shift+F12)
+        if WINDOWS_API_AVAILABLE and RegisterHotKey:
+            self._hotkey_thread = threading.Thread(target=self._hotkey_listener_thread, daemon=True)
+            self._hotkey_thread.start()
+        
+        # Start input listeners (pynput for clicks and typing, not for stop hotkey)
         self._keyboard_listener = keyboard.Listener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
@@ -205,6 +277,7 @@ class Recorder:
             return
         
         print("⏹️  Stopping recording...")
+        self._stopping = True  # Set flag to prevent new events from being recorded
         self._recording = False
         self._stop_event.set()
         
@@ -216,6 +289,19 @@ class Recorder:
             self._keyboard_listener.stop()
         if self._mouse_listener:
             self._mouse_listener.stop()
+        
+        # Unregister hotkey and stop hotkey thread
+        if WINDOWS_API_AVAILABLE and UnregisterHotKey and self._hotkey_hwnd:
+            try:
+                UnregisterHotKey(None, self._stop_hotkey_id)
+            except Exception:
+                pass
+            # Post quit message to exit GetMessage loop
+            if PostQuitMessage:
+                try:
+                    PostQuitMessage(0)
+                except Exception:
+                    pass
         
         print(f"✅ Recording stopped. Captured {len(self.steps)} steps.")
 
@@ -302,12 +388,74 @@ class Recorder:
         return out_path
 
     # =========================================================
+    # Native Hotkey Listener
+    # =========================================================
+
+    def _hotkey_listener_thread(self) -> None:
+        """
+        Dedicated thread for listening to native Windows hotkey (Ctrl+Shift+F12).
+        
+        Uses RegisterHotKey and GetMessage to reliably capture the stop hotkey
+        without interference from pynput or keyboard layout issues.
+        """
+        if not WINDOWS_API_AVAILABLE or not RegisterHotKey or not GetMessage:
+            return
+        
+        try:
+            # Register Ctrl+Shift+F12 as a global hotkey
+            # MOD_CONTROL | MOD_SHIFT = 0x0002 | 0x0004 = 0x0006
+            modifiers = MOD_CONTROL | MOD_SHIFT
+            success = RegisterHotKey(None, self._stop_hotkey_id, modifiers, VK_F12)
+            
+            if not success:
+                if self.debug_json_out:
+                    print("  Debug: Failed to register stop hotkey")
+                return
+            
+            if self.debug_json_out:
+                print("  Debug: Native stop hotkey registered (Ctrl+Shift+F12)")
+            
+            # Message loop to receive WM_HOTKEY messages
+            msg = wintypes.MSG()
+            while self._recording and not self._stop_event.is_set():
+                result = GetMessage(ctypes.byref(msg), None, 0, 0)
+                
+                if result <= 0:
+                    # GetMessage returned 0 (WM_QUIT) or -1 (error)
+                    break
+                
+                if msg.message == WM_HOTKEY and msg.wParam == self._stop_hotkey_id:
+                    # Stop hotkey pressed!
+                    self._stop_hotkey_pressed = True
+                    print("\n  🛑 Stop hotkey detected (Ctrl+Shift+F12)")
+                    
+                    # Immediately set stopping flag to prevent any new events
+                    self._stopping = True
+                    
+                    # Stop recording
+                    self.stop()
+                    break
+        
+        except Exception as e:
+            if self.debug_json_out:
+                print(f"  Debug: Hotkey listener error: {e}")
+        
+        finally:
+            # Clean up hotkey registration
+            if WINDOWS_API_AVAILABLE and UnregisterHotKey:
+                try:
+                    UnregisterHotKey(None, self._stop_hotkey_id)
+                except Exception:
+                    pass
+
+    # =========================================================
     # Event Handlers
     # =========================================================
 
     def _on_mouse_click(self, x: int, y: int, button: mouse.Button, pressed: bool) -> None:
         """Handle mouse click events."""
-        if not self._recording or not pressed:
+        # Safety guard: don't record if stopping
+        if not self._recording or not pressed or self._stopping:
             return
         
         # Flush any pending typing before processing click
@@ -343,11 +491,12 @@ class Recorder:
 
     def _on_key_press(self, key) -> None:
         """Handle key press events."""
-        if not self._recording:
+        # Safety guard: don't record if stopping
+        if not self._recording or self._stopping:
             return
         
         try:
-            # Track modifier keys FIRST (before stop check)
+            # Track modifier keys for hotkey detection
             if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
                 self._ctrl_pressed = True
             elif key == keyboard.Key.alt_l or key == keyboard.Key.alt_r:
@@ -357,22 +506,12 @@ class Recorder:
             elif key == keyboard.Key.cmd or key == keyboard.Key.cmd_r:
                 self._win_pressed = True
             
-            # HIGHEST PRIORITY: Check for stop hotkey (Ctrl+Shift+F12)
-            # This must be checked BEFORE any other hotkey processing to prevent emission
-            if self._ctrl_pressed and self._shift_pressed:
-                try:
-                    if hasattr(key, 'name') and key.name == 'f12':
-                        self._stop_hotkey_pressed = True
-                        print("\n  🛑 Stop hotkey detected (Ctrl+Shift+F12)")
-                        # Stop recording in a separate thread to avoid blocking
-                        threading.Thread(target=self.stop, daemon=True).start()
-                        # Prevent stop hotkey from being emitted as a regular hotkey step
-                        return
-                except Exception:
-                    pass
+            # Note: Stop hotkey (Ctrl+Shift+F12) is handled by native Windows API
+            # in _hotkey_listener_thread, NOT here. This prevents keyboard layout
+            # issues and ensures reliable stop detection.
             
             # Check for other hotkeys (modifier + regular key)
-            # Only process if not a modifier key itself
+            # Only process if not a modifier key itself and not stopping
             if (self._ctrl_pressed or self._alt_pressed or self._win_pressed) and not self._is_modifier_key(key):
                 hotkey_str = self._format_hotkey(key)
                 if hotkey_str:
@@ -593,6 +732,9 @@ class Recorder:
         """
         Capture the UIA element at the specified screen coordinates.
         
+        Walks up the parent chain to find the most meaningful element
+        (one with Accessible.name and non-generic control type).
+        
         This is more reliable than focus-based capture for click events,
         as not all clickable elements receive keyboard focus.
         
@@ -603,6 +745,10 @@ class Recorder:
         Returns:
             Element info dict or None if capture failed.
         """
+        raw_element = None
+        refined_element = None
+        window_title_match = None
+        
         try:
             # Use UIA's ElementFromPoint to get element at coordinates
             if COMTYPES_AVAILABLE:
@@ -633,6 +779,7 @@ class Recorder:
                             # Wrap in pywinauto wrapper
                             from pywinauto.controls.uiawrapper import UIAWrapper
                             wrapped_element = UIAWrapper(element_at_point)
+                            raw_element = wrapped_element
                             
                             # Filter by window title if specified
                             if self.window_title_re:
@@ -650,22 +797,35 @@ class Recorder:
                                             break
                                     
                                     window_title = parent.window_text()
-                                    if not re.search(self.window_title_re, window_title or ""):
+                                    window_title_match = bool(re.search(self.window_title_re, window_title or ""))
+                                    if not window_title_match:
                                         # Not in target window, ignore
+                                        if self.debug_json_out:
+                                            print(f"  Debug: Element not in target window (title: {window_title!r})")
                                         return None
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    if self.debug_json_out:
+                                        print(f"  Debug: Window title check failed: {e}")
+                            
+                            # Refine element by walking up parent chain
+                            # Look for nearest meaningful element with:
+                            # - Non-empty Accessible.name
+                            # - Non-generic control type
+                            refined_element = self._refine_element(wrapped_element)
                             
                             # Extract control info using inspector logic
-                            info = extract_control_info(wrapped_element)
+                            info = extract_control_info(refined_element)
                             
                             # Store debug snapshot if enabled
                             if self.debug_json_out:
+                                raw_info = extract_control_info(raw_element) if raw_element != refined_element else None
                                 self.debug_snapshots.append({
                                     "timestamp": time.time(),
                                     "type": "click",
                                     "coordinates": {"x": x, "y": y},
-                                    "element_info": info,
+                                    "raw_element_info": raw_info,
+                                    "refined_element_info": info,
+                                    "window_title_match": window_title_match,
                                 })
                             
                             return info
@@ -676,12 +836,61 @@ class Recorder:
             
             # Fallback: Use focused element capture
             # This is less accurate but better than nothing
+            if self.debug_json_out:
+                print(f"  Debug: Falling back to focused element capture")
             return self._capture_focused_element()
             
         except Exception as e:
             if self.debug_json_out:
                 print(f"  Debug: Failed to capture element at point: {type(e).__name__}: {e}")
             return None
+
+    def _refine_element(self, element) -> Any:
+        """
+        Walk up the parent chain to find the most meaningful element.
+        
+        Prefer elements with:
+        - Non-empty Accessible.name
+        - Non-generic control type (not Pane, Custom, Group)
+        
+        Args:
+            element: PyWinAuto wrapped element
+        
+        Returns:
+            Refined element (may be same as input if already good)
+        """
+        # Generic control types that we want to skip
+        generic_types = {"Pane", "Custom", "Group", "Window"}
+        
+        current = element
+        max_depth = 5  # Don't walk too far up
+        
+        for depth in range(max_depth):
+            try:
+                # Get element info
+                control_type = current.element_info.control_type if hasattr(current, 'element_info') else None
+                name = current.element_info.name if hasattr(current, 'element_info') else None
+                
+                # Check if this is a meaningful element
+                if name and control_type and control_type not in generic_types:
+                    # Found a good element
+                    return current
+                
+                # Try parent
+                try:
+                    parent = current.parent()
+                    if parent and hasattr(parent, 'handle') and parent.handle != current.handle:
+                        current = parent
+                    else:
+                        break
+                except Exception:
+                    break
+                    
+            except Exception:
+                break
+        
+        # Return original if no better element found
+        return element
 
     def _ensure_element(self, element_info: Dict[str, Any]) -> str:
         """
