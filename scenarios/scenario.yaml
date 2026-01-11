@@ -9,35 +9,35 @@ steps:
 
   # ===== LOGIN =====
   - wait:
-      element: username_input
+      element: usernamefield
       state: visible
 
   - type:
-      element: username_input
+      element: usernamefield
       text: ${username}
 
   - click:
-      element: login_button
+      element: loginbutton
 
   # ===== CREATE TASK =====
   - wait:
-      element: task_input
+      element: taskinput
       state: visible
 
   - type:
-      element: task_input
+      element: taskinput
       text: ${task}
 
   - click:
-      element: add_task_button
+      element: addtaskbutton
 
   # ===== REMOVE TASK =====
   - wait:
-      element: remove_task_button_0
+      element: removetaskbutton0
       state: visible
 
   - click:
-      element: remove_task_button_0
+      element: removetaskbutton0
 
   # ===== LOGOUT (CTRL + L) =====
   - hotkey:

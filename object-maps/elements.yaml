@@ -1,70 +1,271 @@
 app:
   backend: uia
-  default_timeout: 4
-  polling_interval: 0.2
-  ignore_titlebar_buttons: true
-
 windows:
   main:
     locators:
-      - title_re: ".*QtQuickTaskApp.*"
-
+    - title_re: QtQuickTaskApp
 elements:
-  # ===== LOGIN PAGE =====
-
-  username_input:
+  loginpage:
     window: main
+    when:
+      state: login
     locators:
-      - auto_id: usernameField
-        control_type: Edit
-      - control_type: Edit
-        found_index: 0
-
-  login_button:
+    - name: loginPage
+      control_type: Pane
+    - name_re: (?i)loginPage
+      control_type: Pane
+    - class_name: LoginPage_QMLTYPE_28
+      control_type: Pane
+  loginprompt:
     window: main
+    when:
+      state: login
     locators:
-      - auto_id: loginButton
-        control_type: Button
-      - control_type: Button
-        title_re: "(?i)login"
-
-  # ===== MAIN PAGE =====
-
-  task_input:
+    - name: loginPrompt
+      control_type: Text
+    - name_re: (?i)loginPrompt
+      control_type: Text
+    - class_name: QQuickText
+      control_type: Text
+  usernamefield:
     window: main
+    when:
+      state: login
     locators:
-      - auto_id: taskInput
-        control_type: Edit
-      - control_type: Edit
-        found_index: 0
-
-  add_task_button:
+    - name: usernameField
+      control_type: Edit
+    - name_re: (?i)usernameField
+      control_type: Edit
+    - class_name: TextField_QMLTYPE_3
+      control_type: Edit
+  loginbutton:
     window: main
+    when:
+      state: login
     locators:
-      - auto_id: addTaskButton
-        control_type: Button
-      - control_type: Button
-        title_re: "(?i)add|\\+"
-
-  # İlk task satırı (basit E2E için yeterli)
-  remove_task_button_0:
+    - name: loginButton
+      control_type: Button
+    - name_re: (?i)loginButton
+      control_type: Button
+    - class_name: Button_QMLTYPE_4_QML_29
+      control_type: Button
+  taskcounter:
     window: main
+    when:
+      state: main__noTaskAdded
     locators:
-      - auto_id: removeTaskButton_0
-        control_type: Button
-      - control_type: Button
-        title_re: "(?i)remove|delete|x"
-
-  # ===== MENU =====
-
-  file_menu:
+    - name: taskCounter
+      control_type: Text
+    - name_re: (?i)taskCounter
+      control_type: Text
+    - class_name: QQuickText
+      control_type: Text
+  taskinput:
     window: main
+    when:
+      state: main__noTaskAdded
     locators:
-      - control_type: MenuItem
-        title: File
-
-  logout_menu_item:
+    - name: taskInput
+      control_type: Edit
+    - name_re: (?i)taskInput
+      control_type: Edit
+    - class_name: TextField_QMLTYPE_3
+      control_type: Edit
+  addtaskbutton:
     window: main
+    when:
+      state: main__noTaskAdded
     locators:
-      - control_type: MenuItem
-        title_re: "(?i)logout"
+    - name: addTaskButton
+      control_type: Button
+    - name_re: (?i)addTaskButton
+      control_type: Button
+    - class_name: Button_QMLTYPE_4
+      control_type: Button
+  tasklistview:
+    window: main
+    when:
+      state: main__noTaskAdded
+    locators:
+    - name: taskListView
+      control_type: List
+    - name_re: (?i)taskListView
+      control_type: List
+    - class_name: QQuickListView
+      control_type: List
+  taskcounter__main_taskAdded:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskCounter
+      control_type: Text
+    - name_re: (?i)taskCounter
+      control_type: Text
+    - class_name: QQuickText
+      control_type: Text
+  taskinput__main_taskAdded:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskInput
+      control_type: Edit
+    - name_re: (?i)taskInput
+      control_type: Edit
+    - class_name: TextField_QMLTYPE_3
+      control_type: Edit
+  addtaskbutton__main_taskAdded:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: addTaskButton
+      control_type: Button
+    - name_re: (?i)addTaskButton
+      control_type: Button
+    - class_name: Button_QMLTYPE_4
+      control_type: Button
+  tasklistview__main_taskAdded:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskListView
+      control_type: List
+    - name_re: (?i)taskListView
+      control_type: List
+    - class_name: QQuickListView
+      control_type: List
+  taskitem_0:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskItem_0
+      control_type: ListItem
+    - name_re: (?i)taskItem_0
+      control_type: ListItem
+    - class_name: QQuickRectangle_QML_10
+      control_type: ListItem
+  taskcheckbox_0:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskCheckbox_0
+      control_type: CheckBox
+    - name_re: (?i)taskCheckbox_0
+      control_type: CheckBox
+    - class_name: CheckBox_QMLTYPE_5
+      control_type: CheckBox
+  tasktitle_0:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: taskTitle_0
+      control_type: Text
+    - name_re: (?i)taskTitle_0
+      control_type: Text
+    - class_name: QQuickText_QML_11
+      control_type: Text
+  removetaskbutton_0:
+    window: main
+    when:
+      state: main_taskAdded
+    locators:
+    - name: removeTaskButton_0
+      control_type: Button
+    - name_re: (?i)removeTaskButton_0
+      control_type: Button
+    - class_name: Button_QMLTYPE_4
+      control_type: Button
+  taskcounter__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskCounter
+      control_type: Text
+    - name_re: (?i)taskCounter
+      control_type: Text
+    - class_name: QQuickText
+      control_type: Text
+  taskinput__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskInput
+      control_type: Edit
+    - name_re: (?i)taskInput
+      control_type: Edit
+    - class_name: TextField_QMLTYPE_3
+      control_type: Edit
+  addtaskbutton__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: addTaskButton
+      control_type: Button
+    - name_re: (?i)addTaskButton
+      control_type: Button
+    - class_name: Button_QMLTYPE_4
+      control_type: Button
+  tasklistview__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskListView
+      control_type: List
+    - name_re: (?i)taskListView
+      control_type: List
+    - class_name: QQuickListView
+      control_type: List
+  taskitem_0__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskItem_0
+      control_type: ListItem
+    - name_re: (?i)taskItem_0
+      control_type: ListItem
+    - class_name: QQuickRectangle_QML_10
+      control_type: ListItem
+  taskcheckbox_0__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskCheckbox_0
+      control_type: CheckBox
+    - name_re: (?i)taskCheckbox_0
+      control_type: CheckBox
+    - class_name: CheckBox_QMLTYPE_5
+      control_type: CheckBox
+  tasktitle_0__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: taskTitle_0
+      control_type: Text
+    - name_re: (?i)taskTitle_0
+      control_type: Text
+    - class_name: QQuickText_QML_11
+      control_type: Text
+  removetaskbutton_0__main__task_s_checked:
+    window: main
+    when:
+      state: main__task_s_checked
+    locators:
+    - name: removeTaskButton_0
+      control_type: Button
+    - name_re: (?i)removeTaskButton_0
+      control_type: Button
+    - class_name: Button_QMLTYPE_4
+      control_type: Button
