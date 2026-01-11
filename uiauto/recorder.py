@@ -153,6 +153,11 @@ MOD_WIN = 0x0008
 WM_HOTKEY = 0x0312
 VK_F12 = 0x7B
 
+# Recorder constants
+STOP_HOTKEY_MODIFIERS = MOD_CONTROL | MOD_SHIFT  # Ctrl+Shift
+STOP_HOTKEY_VK = VK_F12  # F12 key
+MAX_PARENT_WALK_DEPTH = 5  # Maximum levels to walk up parent chain when refining elements
+
 
 class Recorder:
     """
@@ -218,7 +223,6 @@ class Recorder:
         self._keyboard_listener: Optional[keyboard.Listener] = None
         self._mouse_listener: Optional[mouse.Listener] = None
         self._hotkey_thread: Optional[threading.Thread] = None
-        self._hotkey_hwnd = None  # Window handle for hotkey messages
         
         # Modifier keys state
         self._ctrl_pressed = False
@@ -291,17 +295,21 @@ class Recorder:
             self._mouse_listener.stop()
         
         # Unregister hotkey and stop hotkey thread
-        if WINDOWS_API_AVAILABLE and UnregisterHotKey and self._hotkey_hwnd:
+        if WINDOWS_API_AVAILABLE and UnregisterHotKey:
             try:
                 UnregisterHotKey(None, self._stop_hotkey_id)
-            except Exception:
-                pass
+            except Exception as e:
+                # Cleanup failure is acceptable during shutdown
+                if self.debug_json_out:
+                    print(f"  Debug: Failed to unregister hotkey: {e}")
             # Post quit message to exit GetMessage loop
             if PostQuitMessage:
                 try:
                     PostQuitMessage(0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Cleanup failure is acceptable during shutdown
+                    if self.debug_json_out:
+                        print(f"  Debug: Failed to post quit message: {e}")
         
         print(f"✅ Recording stopped. Captured {len(self.steps)} steps.")
 
@@ -403,9 +411,7 @@ class Recorder:
         
         try:
             # Register Ctrl+Shift+F12 as a global hotkey
-            # MOD_CONTROL | MOD_SHIFT = 0x0002 | 0x0004 = 0x0006
-            modifiers = MOD_CONTROL | MOD_SHIFT
-            success = RegisterHotKey(None, self._stop_hotkey_id, modifiers, VK_F12)
+            success = RegisterHotKey(None, self._stop_hotkey_id, STOP_HOTKEY_MODIFIERS, STOP_HOTKEY_VK)
             
             if not success:
                 if self.debug_json_out:
@@ -863,13 +869,16 @@ class Recorder:
         generic_types = {"Pane", "Custom", "Group", "Window"}
         
         current = element
-        max_depth = 5  # Don't walk too far up
         
-        for depth in range(max_depth):
+        for depth in range(MAX_PARENT_WALK_DEPTH):
             try:
-                # Get element info
-                control_type = current.element_info.control_type if hasattr(current, 'element_info') else None
-                name = current.element_info.name if hasattr(current, 'element_info') else None
+                # Get element info once
+                elem_info = getattr(current, 'element_info', None)
+                if not elem_info:
+                    break
+                
+                control_type = getattr(elem_info, 'control_type', None)
+                name = getattr(elem_info, 'name', None)
                 
                 # Check if this is a meaningful element
                 if name and control_type and control_type not in generic_types:
