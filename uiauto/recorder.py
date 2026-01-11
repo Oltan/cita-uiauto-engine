@@ -95,28 +95,10 @@ try:
     import ctypes
     from ctypes import wintypes
     
-    # Use wintypes.POINT for COM compatibility with UIA
-    # This ensures the structure matches what ElementFromPoint expects
-    try:
-        # Try to import comtypes POINT structure for better COM compatibility
-        import comtypes
-        from comtypes import POINTER
-        
-        # Define tagPOINT structure that matches COM expectations
-        class tagPOINT(ctypes.Structure):
-            """COM-compatible POINT structure for UIA ElementFromPoint."""
-            _fields_ = [
-                ("x", ctypes.c_long),
-                ("y", ctypes.c_long)
-            ]
-        
-        # Use tagPOINT as POINT
-        POINT = tagPOINT
-        POINT_AVAILABLE = True
-    except ImportError:
-        # Fallback to wintypes.POINT if comtypes not available
-        POINT = wintypes.POINT
-        POINT_AVAILABLE = True
+    # Use wintypes.POINT directly for COM compatibility with UIA
+    # This is the standard Windows POINT structure that ElementFromPoint expects
+    POINT = wintypes.POINT
+    POINT_AVAILABLE = True
     
     # Windows API functions for hotkey registration and DPI awareness
     try:
@@ -131,9 +113,19 @@ try:
         UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
         UnregisterHotKey.restype = wintypes.BOOL
         
-        GetMessage = user32.GetMessageW
-        GetMessage.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, ctypes.c_uint, ctypes.c_uint]
-        GetMessage.restype = wintypes.BOOL
+        # PeekMessage for non-blocking message loop
+        PeekMessage = user32.PeekMessageW
+        PeekMessage.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+        PeekMessage.restype = wintypes.BOOL
+        
+        # TranslateMessage and DispatchMessage for message processing
+        TranslateMessage = user32.TranslateMessage
+        TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        TranslateMessage.restype = wintypes.BOOL
+        
+        DispatchMessage = user32.DispatchMessageW
+        DispatchMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+        DispatchMessage.restype = wintypes.LPARAM
         
         PostQuitMessage = user32.PostQuitMessage
         PostQuitMessage.argtypes = [ctypes.c_int]
@@ -149,7 +141,9 @@ try:
         WINDOWS_API_AVAILABLE = False
         RegisterHotKey = None
         UnregisterHotKey = None
-        GetMessage = None
+        PeekMessage = None
+        TranslateMessage = None
+        DispatchMessage = None
         PostQuitMessage = None
         SetProcessDPIAware = None
     
@@ -159,9 +153,14 @@ except ImportError:
     WINDOWS_API_AVAILABLE = False
     RegisterHotKey = None
     UnregisterHotKey = None
-    GetMessage = None
+    PeekMessage = None
+    TranslateMessage = None
+    DispatchMessage = None
     PostQuitMessage = None
     SetProcessDPIAware = None
+
+# Constants for PeekMessage
+PM_REMOVE = 0x0001
 
 # Hotkey constants
 MOD_ALT = 0x0001
@@ -422,10 +421,10 @@ class Recorder:
         """
         Dedicated thread for listening to native Windows hotkey (Ctrl+Shift+F12).
         
-        Uses RegisterHotKey and GetMessage to reliably capture the stop hotkey
-        without interference from pynput or keyboard layout issues.
+        Uses RegisterHotKey and PeekMessage to reliably capture the stop hotkey
+        without blocking, preventing starvation of the hotkey event.
         """
-        if not WINDOWS_API_AVAILABLE or not RegisterHotKey or not GetMessage:
+        if not WINDOWS_API_AVAILABLE or not RegisterHotKey or not PeekMessage:
             return
         
         try:
@@ -440,27 +439,31 @@ class Recorder:
             if self.debug_json_out:
                 print("  Debug: Native stop hotkey registered (Ctrl+Shift+F12)")
             
-            # Message loop to receive WM_HOTKEY messages
+            # Non-blocking message loop using PeekMessage
             msg = wintypes.MSG()
             while self._recording and not self._stop_event.is_set():
-                result = GetMessage(ctypes.byref(msg), None, 0, 0)
-                
-                if result <= 0:
-                    # GetMessage returned 0 (WM_QUIT) or -1 (error)
-                    break
-                
-                if msg.message == WM_HOTKEY and msg.wParam == self._stop_hotkey_id:
-                    # Stop hotkey pressed!
-                    self._stop_hotkey_pressed = True
-                    print("\n  🛑 Stop hotkey detected (Ctrl+Shift+F12)")
-                    
-                    # Immediately set flags to suppress all further recording
-                    self._stop_requested = True
-                    self._stopping = True
-                    
-                    # Stop recording
-                    self.stop()
-                    break
+                # Use PeekMessage for non-blocking check
+                # PM_REMOVE removes the message from queue if available
+                if PeekMessage(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                    if msg.message == WM_HOTKEY and msg.wParam == self._stop_hotkey_id:
+                        # Stop hotkey pressed!
+                        self._stop_hotkey_pressed = True
+                        print("\n  🛑 Stop hotkey detected (Ctrl+Shift+F12)")
+                        
+                        # Immediately set flags to suppress all further recording
+                        self._stop_requested = True
+                        self._stopping = True
+                        
+                        # Stop recording
+                        self.stop()
+                        break
+                    else:
+                        # Process other messages
+                        TranslateMessage(ctypes.byref(msg))
+                        DispatchMessage(ctypes.byref(msg))
+                else:
+                    # No message available, sleep briefly to avoid busy loop
+                    time.sleep(0.01)  # 10ms sleep as specified
         
         except Exception as e:
             if self.debug_json_out:
@@ -471,8 +474,10 @@ class Recorder:
             if WINDOWS_API_AVAILABLE and UnregisterHotKey:
                 try:
                     UnregisterHotKey(None, self._stop_hotkey_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Cleanup failure is acceptable during shutdown
+                    if self.debug_json_out:
+                        print(f"  Debug: Failed to unregister hotkey: {e}")
 
     # =========================================================
     # Event Handlers
