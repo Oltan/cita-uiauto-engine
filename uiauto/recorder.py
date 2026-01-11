@@ -95,9 +95,28 @@ try:
     import ctypes
     from ctypes import wintypes
     
-    class POINT(ctypes.Structure):
-        """Windows POINT structure for screen coordinates."""
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    # Use wintypes.POINT for COM compatibility with UIA
+    # This ensures the structure matches what ElementFromPoint expects
+    try:
+        # Try to import comtypes POINT structure for better COM compatibility
+        import comtypes
+        from comtypes import POINTER
+        
+        # Define tagPOINT structure that matches COM expectations
+        class tagPOINT(ctypes.Structure):
+            """COM-compatible POINT structure for UIA ElementFromPoint."""
+            _fields_ = [
+                ("x", ctypes.c_long),
+                ("y", ctypes.c_long)
+            ]
+        
+        # Use tagPOINT as POINT
+        POINT = tagPOINT
+        POINT_AVAILABLE = True
+    except ImportError:
+        # Fallback to wintypes.POINT if comtypes not available
+        POINT = wintypes.POINT
+        POINT_AVAILABLE = True
     
     # Windows API functions for hotkey registration and DPI awareness
     try:
@@ -134,7 +153,6 @@ try:
         PostQuitMessage = None
         SetProcessDPIAware = None
     
-    POINT_AVAILABLE = True
 except ImportError:
     POINT = None
     POINT_AVAILABLE = False
@@ -219,6 +237,7 @@ class Recorder:
         # Control flags
         self._recording = False
         self._stopping = False  # Flag to prevent recording during stop sequence
+        self._stop_requested = False  # Flag set by stop hotkey or Ctrl+C (suppresses all further recording)
         self._stop_event = threading.Event()
         self._keyboard_listener: Optional[keyboard.Listener] = None
         self._mouse_listener: Optional[mouse.Listener] = None
@@ -435,7 +454,8 @@ class Recorder:
                     self._stop_hotkey_pressed = True
                     print("\n  🛑 Stop hotkey detected (Ctrl+Shift+F12)")
                     
-                    # Immediately set stopping flag to prevent any new events
+                    # Immediately set flags to suppress all further recording
+                    self._stop_requested = True
                     self._stopping = True
                     
                     # Stop recording
@@ -497,6 +517,11 @@ class Recorder:
 
     def _on_key_press(self, key) -> None:
         """Handle key press events."""
+        # HIGHEST PRIORITY: Check stop_requested flag first
+        # If stop was requested (by native hotkey or Ctrl+C), suppress ALL key processing
+        if self._stop_requested:
+            return
+        
         # Safety guard: don't record if stopping
         if not self._recording or self._stopping:
             return
@@ -511,6 +536,20 @@ class Recorder:
                 self._shift_pressed = True
             elif key == keyboard.Key.cmd or key == keyboard.Key.cmd_r:
                 self._win_pressed = True
+            
+            # SUPPRESS stop hotkey detection via pynput
+            # Stop hotkey is ONLY handled by native Windows API
+            # If Ctrl+Shift is pressed, check if it's F12 and suppress it
+            if self._ctrl_pressed and self._shift_pressed:
+                try:
+                    # Check if this is F12 (or END on some keyboards)
+                    key_name = getattr(key, 'name', '').lower() if hasattr(key, 'name') else ''
+                    if key_name in ('f12', 'end'):
+                        # This is the stop hotkey - suppress it completely
+                        # Native hotkey thread will handle it
+                        return
+                except Exception:
+                    pass
             
             # Note: Stop hotkey (Ctrl+Shift+F12) is handled by native Windows API
             # in _hotkey_listener_thread, NOT here. This prevents keyboard layout
@@ -836,15 +875,16 @@ class Recorder:
                             
                             return info
                     except Exception as e:
-                        # ElementFromPoint failed, try fallback
+                        # ElementFromPoint failed
                         if self.debug_json_out:
                             print(f"  Debug: ElementFromPoint failed: {type(e).__name__}: {e}")
             
-            # Fallback: Use focused element capture
-            # This is less accurate but better than nothing
+            # NO FALLBACK to focused element
+            # Focus-based capture is unreliable and causes ElementAmbiguousError
+            # Better to return None and skip the click than emit wrong/ambiguous steps
             if self.debug_json_out:
-                print(f"  Debug: Falling back to focused element capture")
-            return self._capture_focused_element()
+                print(f"  Debug: Element capture failed, no fallback (focus-based is unreliable)")
+            return None
             
         except Exception as e:
             if self.debug_json_out:
@@ -1072,6 +1112,8 @@ def record_session(
     
     except KeyboardInterrupt:
         print("\n")
+        # Set stop_requested to suppress any pending key events (including Ctrl+C itself)
+        recorder._stop_requested = True
         recorder.stop()
     
     finally:
