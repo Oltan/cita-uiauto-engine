@@ -103,6 +103,7 @@ try:
     # Windows API functions for hotkey registration and DPI awareness
     try:
         user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
         
         # RegisterHotKey/UnregisterHotKey for native stop hotkey
         RegisterHotKey = user32.RegisterHotKey
@@ -112,6 +113,23 @@ try:
         UnregisterHotKey = user32.UnregisterHotKey
         UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
         UnregisterHotKey.restype = wintypes.BOOL
+        
+        # CreateWindowEx for message-only window
+        CreateWindowEx = user32.CreateWindowExW
+        CreateWindowEx.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID
+        ]
+        CreateWindowEx.restype = wintypes.HWND
+        
+        DestroyWindow = user32.DestroyWindow
+        DestroyWindow.argtypes = [wintypes.HWND]
+        DestroyWindow.restype = wintypes.BOOL
+        
+        GetModuleHandle = kernel32.GetModuleHandleW
+        GetModuleHandle.argtypes = [wintypes.LPCWSTR]
+        GetModuleHandle.restype = wintypes.HMODULE
         
         # PeekMessage for non-blocking message loop
         PeekMessage = user32.PeekMessageW
@@ -141,6 +159,9 @@ try:
         WINDOWS_API_AVAILABLE = False
         RegisterHotKey = None
         UnregisterHotKey = None
+        CreateWindowEx = None
+        DestroyWindow = None
+        GetModuleHandle = None
         PeekMessage = None
         TranslateMessage = None
         DispatchMessage = None
@@ -153,6 +174,9 @@ except ImportError:
     WINDOWS_API_AVAILABLE = False
     RegisterHotKey = None
     UnregisterHotKey = None
+    CreateWindowEx = None
+    DestroyWindow = None
+    GetModuleHandle = None
     PeekMessage = None
     TranslateMessage = None
     DispatchMessage = None
@@ -161,6 +185,9 @@ except ImportError:
 
 # Constants for PeekMessage
 PM_REMOVE = 0x0001
+
+# Constants for CreateWindowEx
+HWND_MESSAGE = -3  # Message-only window
 
 # Hotkey constants
 MOD_ALT = 0x0001
@@ -421,15 +448,42 @@ class Recorder:
         """
         Dedicated thread for listening to native Windows hotkey (Ctrl+Shift+F12).
         
-        Uses RegisterHotKey and PeekMessage to reliably capture the stop hotkey
-        without blocking, preventing starvation of the hotkey event.
+        Uses RegisterHotKey with a message-only window and PeekMessage to reliably
+        capture the stop hotkey without blocking, preventing starvation of the hotkey event.
+        
+        Message-only window ensures hotkey delivery on all Windows configurations.
         """
         if not WINDOWS_API_AVAILABLE or not RegisterHotKey or not PeekMessage:
             return
         
+        hwnd = None
         try:
+            # Create a message-only window for reliable hotkey delivery
+            # Some systems don't deliver hotkeys registered with NULL HWND
+            if CreateWindowEx and GetModuleHandle:
+                try:
+                    hinstance = GetModuleHandle(None)
+                    hwnd = CreateWindowEx(
+                        0,                  # dwExStyle
+                        "Message",          # lpClassName (built-in class)
+                        "UIAutoRecorder",   # lpWindowName
+                        0,                  # dwStyle
+                        0, 0, 0, 0,        # position and size (ignored for message-only)
+                        HWND_MESSAGE,      # hWndParent (HWND_MESSAGE = message-only window)
+                        None,              # hMenu
+                        hinstance,         # hInstance
+                        None               # lpParam
+                    )
+                    if hwnd and self.debug_json_out:
+                        print(f"  Debug: Created message-only window (HWND: {hwnd})")
+                except Exception as e:
+                    if self.debug_json_out:
+                        print(f"  Debug: Failed to create message window: {e}, using NULL")
+                    hwnd = None
+            
             # Register Ctrl+Shift+F12 as a global hotkey
-            success = RegisterHotKey(None, self._stop_hotkey_id, STOP_HOTKEY_MODIFIERS, STOP_HOTKEY_VK)
+            # Use hwnd if available, otherwise NULL (less reliable on some systems)
+            success = RegisterHotKey(hwnd, self._stop_hotkey_id, STOP_HOTKEY_MODIFIERS, STOP_HOTKEY_VK)
             
             if not success:
                 if self.debug_json_out:
@@ -444,7 +498,7 @@ class Recorder:
             while self._recording and not self._stop_event.is_set():
                 # Use PeekMessage for non-blocking check
                 # PM_REMOVE removes the message from queue if available
-                if PeekMessage(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                if PeekMessage(ctypes.byref(msg), hwnd, 0, 0, PM_REMOVE):
                     if msg.message == WM_HOTKEY and msg.wParam == self._stop_hotkey_id:
                         # Stop hotkey pressed!
                         self._stop_hotkey_pressed = True
@@ -473,11 +527,21 @@ class Recorder:
             # Clean up hotkey registration
             if WINDOWS_API_AVAILABLE and UnregisterHotKey:
                 try:
-                    UnregisterHotKey(None, self._stop_hotkey_id)
+                    UnregisterHotKey(hwnd, self._stop_hotkey_id)
                 except Exception as e:
                     # Cleanup failure is acceptable during shutdown
                     if self.debug_json_out:
                         print(f"  Debug: Failed to unregister hotkey: {e}")
+            
+            # Clean up message window
+            if hwnd and DestroyWindow:
+                try:
+                    DestroyWindow(hwnd)
+                    if self.debug_json_out:
+                        print(f"  Debug: Destroyed message window")
+                except Exception as e:
+                    if self.debug_json_out:
+                        print(f"  Debug: Failed to destroy window: {e}")
 
     # =========================================================
     # Event Handlers
@@ -917,13 +981,30 @@ class Recorder:
         
         for depth in range(MAX_PARENT_WALK_DEPTH):
             try:
-                # Get element info once
+                # Get element info once - be defensive about QtQuick elements
                 elem_info = getattr(current, 'element_info', None)
                 if not elem_info:
-                    break
+                    # No element_info, try parent
+                    try:
+                        parent = current.parent()
+                        if parent and hasattr(parent, 'handle') and parent.handle != current.handle:
+                            current = parent
+                            continue
+                        else:
+                            break
+                    except Exception:
+                        break
                 
-                control_type = getattr(elem_info, 'control_type', None)
-                name = getattr(elem_info, 'name', None)
+                # Safely access control_type and name - QtQuick elements may not expose these
+                try:
+                    control_type = getattr(elem_info, 'control_type', None)
+                except (AttributeError, Exception):
+                    control_type = None
+                
+                try:
+                    name = getattr(elem_info, 'name', None)
+                except (AttributeError, Exception):
+                    name = None
                 
                 # Check if this is a meaningful element
                 if name and control_type and control_type not in generic_types:
@@ -940,8 +1021,18 @@ class Recorder:
                 except Exception:
                     break
                     
-            except Exception:
-                break
+            except Exception as e:
+                # If we hit any exception during refinement, log it and try parent
+                if self.debug_json_out:
+                    print(f"  Debug: Refinement exception at depth {depth}: {type(e).__name__}: {e}")
+                try:
+                    parent = current.parent()
+                    if parent and hasattr(parent, 'handle') and parent.handle != current.handle:
+                        current = parent
+                    else:
+                        break
+                except Exception:
+                    break
         
         # Return original if no better element found
         return element
